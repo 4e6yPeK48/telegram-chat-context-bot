@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import logging
 import os
 import re
@@ -28,6 +29,7 @@ MAX_TELEGRAM_MESSAGE_LEN = 4096
 DEFAULT_SUMMARY_MESSAGES = 80
 MAX_SUMMARY_MESSAGES = 500
 SUMMARY_CHUNK_SIZE_CHARS = 10000
+CLEANUP_INTERVAL_SECONDS = 3 * 24 * 60 * 60
 
 
 @dataclass(frozen=True)
@@ -334,6 +336,22 @@ class ContextSummarizerBot:
         if removed:
             logger.info("Удалено устаревших сообщений: %s", removed)
 
+    async def periodic_cleanup(self) -> None:
+        while True:
+            try:
+                removed = await asyncio.to_thread(self.store.cleanup_old_messages, self.settings.retention_days)
+                if removed:
+                    logger.info("Периодическая очистка: удалено сообщений %s", removed)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("Ошибка периодической очистки истории")
+
+            try:
+                await asyncio.sleep(CLEANUP_INTERVAL_SECONDS)
+            except asyncio.CancelledError:
+                raise
+
     def is_summary_request(self, text: str) -> int | None:
         match = SUMMARY_REQUEST_RE.match(text.strip())
         if not match:
@@ -534,6 +552,7 @@ async def main() -> None:
     async with aiohttp.ClientSession() as session:
         app = ContextSummarizerBot(settings, session)
         app.initialize()
+        cleanup_task = asyncio.create_task(app.periodic_cleanup())
 
         router.message.register(app.handle_start, Command("start"))
         router.message.register(app.handle_summary_command, Command("summary"))
@@ -542,7 +561,12 @@ async def main() -> None:
         dp.include_router(router)
 
         logger.info("Бот запущен")
-        await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
+        try:
+            await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
+        finally:
+            cleanup_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await cleanup_task
 
 
 if __name__ == "__main__":
