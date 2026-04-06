@@ -376,29 +376,33 @@ class ContextSummarizerBot:
             created_at=_message_datetime(message),
         )
 
-    def _summary_spec(self, requested_count: int) -> tuple[str, int, int]:
+    def _summary_spec(self, requested_count: int) -> tuple[str, int, int, int]:
         if requested_count <= 30:
             return (
-                "Ответ должен быть очень коротким: 1-2 предложения и 3-4 буллета. Без длинных абзацев.",
+                "Ответ должен быть коротким и связным: 1-2 предложения и 3-4 буллета. Без длинных абзацев.",
                 4,
-                320,
+                420,
+                520,
             )
         if requested_count <= 100:
             return (
                 "Ответ должен быть коротким: 2-3 предложения и 4-5 буллетов. Если есть решения, вынеси их отдельно.",
                 5,
-                420,
+                500,
+                620,
             )
         if requested_count <= 250:
             return (
                 "Ответ должен быть компактным и структурированным: краткое резюме, 4-6 основных тем, решения/договорённости и 1-3 следующих шага.",
                 6,
-                560,
+                650,
+                760,
             )
         return (
             "Ответ должен оставаться компактным даже при большом количестве сообщений: краткое резюме, 5-7 основных тем, решения/договорённости, открытые вопросы и следующие шаги. Не пересказывай чат по сообщениям.",
             7,
-            700,
+            750,
+            900,
         )
 
     async def reply_long(self, message: Message, text: str) -> None:
@@ -430,7 +434,7 @@ class ContextSummarizerBot:
 
     def build_final_prompt(self, chat_title: str, requested_count: int, chunk_summaries: list[str]) -> list[
         dict[str, str]]:
-        style_hint, max_bullets, _ = self._summary_spec(requested_count)
+        style_hint, max_bullets, _, _ = self._summary_spec(requested_count)
         system_prompt = (
             "Ты сводишь промежуточные результаты анализа Telegram-чата в одну короткую итоговую сводку по-русски. "
             "Не добавляй фактов, которых нет в исходных данных. "
@@ -463,17 +467,15 @@ class ContextSummarizerBot:
         if not chunks:
             return "Пока нет сохранённого контекста для этого чата."
 
+        _, _, chunk_tokens, final_tokens = self._summary_spec(requested_count)
+
         chunk_summaries: list[str] = []
         for index, chunk in enumerate(chunks, start=1):
             chunk_text = "\n".join(_format_record(record) for record in chunk)
             summary = await self.api.chat(self.build_chunk_prompt(chat_title, index, len(chunks), chunk_text),
-                                          max_tokens=320)
+                                          max_tokens=chunk_tokens)
             chunk_summaries.append(summary or "Краткая сводка этого фрагмента не получилась.")
 
-        if len(chunk_summaries) == 1:
-            return chunk_summaries[0]
-
-        _, _, final_tokens = self._summary_spec(requested_count)
         final_summary = await self.api.chat(self.build_final_prompt(chat_title, requested_count, chunk_summaries),
                                             max_tokens=final_tokens)
         return final_summary or "\n\n".join(chunk_summaries)
