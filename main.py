@@ -25,6 +25,9 @@ logger = logging.getLogger("telegram-context-bot")
 
 SUMMARY_REQUEST_RE = re.compile(r"^(?:!сводка|!summary)(?:\s+(\d+))?\s*$", re.IGNORECASE)
 MAX_TELEGRAM_MESSAGE_LEN = 4096
+DEFAULT_SUMMARY_MESSAGES = 80
+MAX_SUMMARY_MESSAGES = 500
+SUMMARY_CHUNK_SIZE_CHARS = 10000
 
 
 @dataclass(frozen=True)
@@ -78,9 +81,9 @@ def load_settings() -> Settings:
         openai_model=os.getenv("OPENAI_MODEL", "openrouter/free").strip(),
         database_path=Path(os.getenv("DATABASE_PATH", "data/chat_context.sqlite3")).expanduser(),
         retention_days=_read_int("RETENTION_DAYS", 30),
-        default_summary_messages=_read_int("DEFAULT_SUMMARY_MESSAGES", 50),
-        max_summary_messages=_read_int("MAX_SUMMARY_MESSAGES", 300),
-        chunk_size_chars=_read_int("SUMMARY_CHUNK_SIZE_CHARS", 12000),
+        default_summary_messages=_read_int("DEFAULT_SUMMARY_MESSAGES", DEFAULT_SUMMARY_MESSAGES),
+        max_summary_messages=_read_int("MAX_SUMMARY_MESSAGES", MAX_SUMMARY_MESSAGES),
+        chunk_size_chars=_read_int("SUMMARY_CHUNK_SIZE_CHARS", SUMMARY_CHUNK_SIZE_CHARS),
         openrouter_http_referer=os.getenv("OPENROUTER_HTTP_REFERER", "").strip() or None,
         openrouter_app_name=os.getenv("OPENROUTER_APP_NAME", "").strip() or None,
     )
@@ -355,6 +358,31 @@ class ContextSummarizerBot:
             created_at=_message_datetime(message),
         )
 
+    def _summary_spec(self, requested_count: int) -> tuple[str, int, int]:
+        if requested_count <= 30:
+            return (
+                "Ответ должен быть очень коротким: 1-2 предложения и 3-4 буллета. Без длинных абзацев.",
+                4,
+                320,
+            )
+        if requested_count <= 100:
+            return (
+                "Ответ должен быть коротким: 2-3 предложения и 4-5 буллетов. Если есть решения, вынеси их отдельно.",
+                5,
+                420,
+            )
+        if requested_count <= 250:
+            return (
+                "Ответ должен быть компактным и структурированным: краткое резюме, 4-6 основных тем, решения/договорённости и 1-3 следующих шага.",
+                6,
+                560,
+            )
+        return (
+            "Ответ должен оставаться компактным даже при большом количестве сообщений: краткое резюме, 5-7 основных тем, решения/договорённости, открытые вопросы и следующие шаги. Не пересказывай чат по сообщениям.",
+            7,
+            700,
+        )
+
     async def reply_long(self, message: Message, text: str) -> None:
         if len(text) <= MAX_TELEGRAM_MESSAGE_LEN:
             await message.answer(text)
@@ -366,16 +394,16 @@ class ContextSummarizerBot:
     def build_chunk_prompt(self, chat_title: str, chunk_index: int, total_chunks: int, chunk_text: str) -> list[
         dict[str, str]]:
         system_prompt = (
-            "Ты анализируешь Telegram-чат и делаешь очень короткую, полезную сводку по-русски. "
-            "Не выдумывай факты. Если в данных мало смысла, честно скажи об этом. "
-            "Старайся выделить темы, решения, вопросы и действия."
+            "Ты анализируешь Telegram-чат и делаешь короткую, полезную сводку по-русски. "
+            "Не выдумывай факты и не пересказывай сообщения по одному. "
+            "Сгруппируй похожие мысли, сохрани главные темы, решения, вопросы и действия."
         )
         user_prompt = (
             f"Чат: {chat_title}\n"
             f"Фрагмент: {chunk_index}/{total_chunks}\n\n"
             f"Сообщения:\n{chunk_text}\n\n"
-            "Сделай промежуточную сводку этого фрагмента в 4-8 пунктов. "
-            "Пиши кратко, без длинных вступлений и без лишних повторов."
+            "Сделай промежуточную сводку этого фрагмента в 3-6 очень коротких пунктов. "
+            "Не повторяй каждую реплику, объединяй однотипные сообщения в общую мысль."
         )
         return [
             {"role": "system", "content": system_prompt},
@@ -384,10 +412,11 @@ class ContextSummarizerBot:
 
     def build_final_prompt(self, chat_title: str, requested_count: int, chunk_summaries: list[str]) -> list[
         dict[str, str]]:
+        style_hint, max_bullets, _ = self._summary_spec(requested_count)
         system_prompt = (
             "Ты сводишь промежуточные результаты анализа Telegram-чата в одну короткую итоговую сводку по-русски. "
             "Не добавляй фактов, которых нет в исходных данных. "
-            "Пиши структурированно и очень кратко."
+            f"{style_hint}"
         )
         user_prompt = (
                 f"Чат: {chat_title}\n"
@@ -397,10 +426,10 @@ class ContextSummarizerBot:
                 + "\n\n"
                   "Сделай итоговую сводку в формате:\n"
                   "1) Кратко: 2-4 предложения\n"
-                  "2) Основные темы: 3-6 буллетов\n"
+                  f"2) Основные темы: максимум {max_bullets} буллетов\n"
                   "3) Решения/договорённости\n"
                   "4) Открытые вопросы или следующие шаги\n"
-                  "Если данных недостаточно — так и скажи."
+                  "Пиши без воды, без повторов и без длинных вступлений. Если данных недостаточно — так и скажи."
         )
         return [
             {"role": "system", "content": system_prompt},
@@ -420,21 +449,22 @@ class ContextSummarizerBot:
         for index, chunk in enumerate(chunks, start=1):
             chunk_text = "\n".join(_format_record(record) for record in chunk)
             summary = await self.api.chat(self.build_chunk_prompt(chat_title, index, len(chunks), chunk_text),
-                                          max_tokens=500)
+                                          max_tokens=320)
             chunk_summaries.append(summary or "Краткая сводка этого фрагмента не получилась.")
 
         if len(chunk_summaries) == 1:
             return chunk_summaries[0]
 
+        _, _, final_tokens = self._summary_spec(requested_count)
         final_summary = await self.api.chat(self.build_final_prompt(chat_title, requested_count, chunk_summaries),
-                                            max_tokens=700)
+                                            max_tokens=final_tokens)
         return final_summary or "\n\n".join(chunk_summaries)
 
     async def handle_start(self, message: Message) -> None:
         await message.answer(
             "Я собираю сообщения чата и умею делать короткую сводку контекста.\n\n"
             "Примеры:\n"
-            "• !сводка 300 — сводка последних 300 сообщений\n"
+            "• !сводка 500 — сводка последних 500 сообщений\n"
             "• /summary 100 — то же самое\n\n"
             "Важно: бот должен видеть сообщения в группе. Для этого в BotFather обычно нужно отключить privacy mode."
         )

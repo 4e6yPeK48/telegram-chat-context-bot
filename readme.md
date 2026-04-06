@@ -61,9 +61,9 @@
 - `OPENAI_MODEL` — имя модели, например `openrouter/free` или другая доступная модель
 - `DATABASE_PATH` — путь к SQLite-файлу, по умолчанию `data/chat_context.sqlite3`
 - `RETENTION_DAYS` — сколько дней хранить сообщения, по умолчанию `30`
-- `DEFAULT_SUMMARY_MESSAGES` — сколько сообщений брать по умолчанию, по умолчанию `50`
-- `MAX_SUMMARY_MESSAGES` — максимальный лимит для одной сводки, по умолчанию `300`
-- `SUMMARY_CHUNK_SIZE_CHARS` — размер одного чанка для обработки, по умолчанию `12000`
+- `DEFAULT_SUMMARY_MESSAGES` — сколько сообщений брать по умолчанию, по умолчанию `80`
+- `MAX_SUMMARY_MESSAGES` — максимальный лимит для одной сводки, по умолчанию `500`
+- `SUMMARY_CHUNK_SIZE_CHARS` — размер одного чанка для обработки, по умолчанию `10000`
 - `LOG_LEVEL` — `INFO`, `DEBUG`, `WARNING` и т. д.
 
 Если используете OpenRouter, можно дополнительно задать:
@@ -76,7 +76,7 @@
 1. Создайте бота через `@BotFather`.
 2. Отключите `Privacy Mode`, чтобы бот видел обычные сообщения в группе.
 3. Добавьте бота в нужный чат.
-4. После этого в чате можно писать `!сводка 300` или `/summary 300`.
+4. После этого в чате можно писать `!сводка 500` или `/summary 500`.
 
 ## Запуск на Ubuntu VPS
 
@@ -124,9 +124,9 @@ OPENAI_BASE_URL=https://openrouter.ai/api/v1
 OPENAI_MODEL=openrouter/free
 DATABASE_PATH=data/chat_context.sqlite3
 RETENTION_DAYS=30
-DEFAULT_SUMMARY_MESSAGES=50
-MAX_SUMMARY_MESSAGES=300
-SUMMARY_CHUNK_SIZE_CHARS=12000
+DEFAULT_SUMMARY_MESSAGES=80
+MAX_SUMMARY_MESSAGES=500
+SUMMARY_CHUNK_SIZE_CHARS=10000
 LOG_LEVEL=INFO
 OPENROUTER_HTTP_REFERER=https://your-domain.example
 OPENROUTER_APP_NAME=telegram-chat-context-bot
@@ -181,7 +181,7 @@ journalctl -u telegram-chat-context-bot -f
 ## Полезные замечания
 
 - Бот не увидит обычные сообщения в группе, если не выключить Privacy Mode.
-- Если чат очень активный, увеличивать `MAX_SUMMARY_MESSAGES` выше 300 обычно не нужно.
+- Если чат очень активный, увеличивать `MAX_SUMMARY_MESSAGES` выше 500 обычно не нужно.
 - История хранится в SQLite-файле и переживает перезапуск VPS.
 
 
